@@ -50,8 +50,7 @@ export type IJitsiConference={
   setDisplayName:(name:string)=>void
   addTrack:(track:Track)=>Promise<any>
   myUserId:()=>ID
-
-  leave:()=>void
+  leave:()=>Promise<void>
   isJoined: () => boolean
 }
 
@@ -277,8 +276,7 @@ export const useConferenceStore = create<ConferenceStore>((set,get) => {
 
   const leave = () => { 
     const conference = get().conferenceObject
-    conference?.leave()
-    set({isJoined:false});
+    conference?.leave().then(() => set({isJoined:false}));
   }
   const setConferenceName = (name) => {
     if(name.length < 1) return false
