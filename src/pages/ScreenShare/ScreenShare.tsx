@@ -1,12 +1,182 @@
-import React, { memo, useEffect, useRef } from 'react'
-import styled from 'styled-components';
-import create from "zustand"
-
-import { ErrorHandler } from '../../components/common/Info/ErrorHandler'
-import { useConnectionStore } from './../../store/ConnectionStore'
-import { useConferenceStore, VideoTrack } from './../../store/ConferenceStore';
+import { useEffect, useState, useRef, memo } from "react"
+import { useConnectionStore } from "../../store/ConnectionStore"
 import { useParams } from 'react-router-dom'
-import { useLocalStore } from '../../store/LocalStore'
+import { useLocalStore } from "../../store/LocalStore"
+import { useConferenceStore, VideoTrack } from "../../store/ConferenceStore"
+import React from "react"
+import { ErrorHandler } from "../../components/common/Info/ErrorHandler"
+import styled from "styled-components"
+
+export const JitsiMgr = () => {
+  const [isConnected, setIsConnected] = useState<Boolean>(false)
+  const initJitsiMeet = useConnectionStore(store => store.initJitsiMeet)
+
+  const connect = async () => {
+    return new Promise((resolve, reject) => {
+      if(isConnected){
+        resolve(undefined);
+        return;
+      }
+
+      initJitsiMeet().then(() => {
+        resolve(undefined);
+      })
+    })
+  }
+
+  return {
+    isConnected,
+    setIsConnected,
+    connect
+  }
+}
+
+type ConnectionState = "INIT" | "CREATING" | "READY"
+
+export const ConnectionMgr = (id) => {
+  const [state, setState] = useState<ConnectionState>("INIT");
+  const connConnectServer = useConnectionStore(store => store.connectServer)
+  const connIsConnected = useConnectionStore(store => store.connected)
+
+  const connect = () => {
+    setState("CREATING")
+    connConnectServer(id);
+  }
+
+  useEffect(() => {
+    if(connIsConnected){
+      setState("READY");
+    }
+    else{
+      setState("INIT");
+    }
+  }, [connIsConnected])
+
+  return {
+    state,
+    connect,
+  }
+}
+
+type TrackState = "INIT" | "CREATING" | "READY" | "DISPOSING" | "STOPPED"
+
+export const TrackMgr = () => {
+  const [state, setState] = useState<TrackState>("INIT");
+  const jsMeet = useConnectionStore(store => store.jsMeet)
+  const setLocalTracks = useLocalStore(store => store.setLocalTracks)
+  const videoTrack = useLocalStore(store => store.video)
+
+  const create = () => {
+    if(state === "READY" || state === "CREATING" || state === "DISPOSING") return;
+
+    console.log("trackMgr.state => CREATING")
+
+    const meet = jsMeet;
+    if(meet == null) return;
+    setState("CREATING")
+    meet
+      .createLocalTracks({ devices: ['desktop'] }, true)
+      .then(tracks => {
+        console.log("trackMgr.state => READY")
+        setState("READY")
+        for(const t of tracks){
+          // set desired state to INIT, when screensharing is stopped via browser ui button "stop sharing"
+          t.addEventListener(meet.events.track.LOCAL_TRACK_STOPPED, () => {
+            console.log("trackMgr.state => STOPPED")
+            setState("STOPPED");
+          })
+        }
+        setLocalTracks(tracks)
+      })
+      .catch((error) => {
+        console.log("trackMgr.state => STOPPED")
+        setState("STOPPED");
+      });
+  }
+
+  const reset = () => {
+    console.log("trackMgr.state => DISPOSING")
+    setState("DISPOSING");
+    if(state === "READY") {
+      videoTrack?.dispose().then(() => {
+        console.log("trackMgr.state => INIT")
+        setState("INIT")
+      });
+    }
+    else {
+      console.log("trackMgr.state => INIT")
+      setState("INIT");
+    }
+  }
+
+  return {
+    state,
+    create,
+    reset,
+  }
+}
+
+type ConferenceState = "INIT" | "JOINING" | "READY"
+  
+export const ConferenceMgr = (id) => {
+  const [state, setState] = useState<ConferenceState>("INIT");
+
+  const initConference = useConferenceStore(store => store.init);
+  const leaveConference = useConferenceStore(state => state.leave);
+  const isJoined = useConferenceStore(store => store.isJoined);
+
+  const join = () => {
+    if(!isJoined){
+      initConference(id);
+      setState("JOINING");
+    }
+  }
+
+  const reset = () => {
+    if(state === "READY" && isJoined){
+      // causes isJoined to transition to false, which triggers useEffect below to reset the state
+      leaveConference();
+    }
+  }
+
+  useEffect(() => {
+    setState(isJoined ? "READY": "INIT");
+  }, [isJoined])
+
+  return {
+    state,
+    join,
+    reset,
+  }
+}
+
+type LinkState = "INIT" | "LINKED" | "LEFT"
+
+export const LinkMgr = (linkPrimary) => {
+  const [state, setState] = useState<LinkState>("INIT");
+  const conference = useConferenceStore(state => state.conferenceObject)
+  const jsMeet = useConnectionStore(store => store.jsMeet)
+
+  const link = () => {
+    conference?.sendCommand('link', { value: JSON.stringify({ id: conference.myUserId(), main: linkPrimary }) })
+    conference?.on(jsMeet?.events.conference.USER_LEFT, idLeft => {
+      if (conference?.isJoined() && idLeft === linkPrimary) {
+        setState("LEFT");
+      }
+    })
+    setState("LINKED");
+  }
+
+  const reset = () => {
+    setState("INIT");
+  }
+
+  return {
+    state,
+    link,
+    reset
+  }
+}
 
 const Video = styled.video`
   width: 100%;
@@ -35,204 +205,105 @@ const ScreenShareVideo: React.FC<{ track: VideoTrack }> = memo(({ track }) => {
   return (
     <Video autoPlay={true} ref={myRef} className={`localTrack videoTrack`} />
   )
-})
-
-type DesiredConnectionState = "INIT" | "SHARE" | "RESHARE"
-
-type IScreenShareStore = {
-  desiredConnectionState: DesiredConnectionState,
-  linkAnnounced: boolean,
-  creatingTrack: boolean,
-  setDesiredConnectionState: (DesiredConnectionState) => void,
-  setLinkAnnounced: (boolean) => void,
-  setCreatingTrack: (boolean) => void,
-};
-
-const useScreenShareStore = create<IScreenShareStore>((set, get) => {
-  const initialState = {
-    desiredConnectionState: "SHARE",
-    linkAnnounced: false,
-    creatingTrack: false,
-  } as const;
-
-  const setDesiredConnectionState = (desiredConnectionState: DesiredConnectionState) => {
-    set({ desiredConnectionState });
-  };
-
-  const setLinkAnnounced = (linkAnnounced: boolean) => {
-    set({ linkAnnounced });
-  };
-
-  const setCreatingTrack = (creatingTrack: boolean) => {
-    set({ creatingTrack });
-  };
-
-  return {
-    ...initialState,
-    setDesiredConnectionState,
-    setLinkAnnounced,
-    setCreatingTrack,
-  };
 });
 
-
 export const ScreenShare = () => {
-  const conference = useConferenceStore(state => state.conferenceObject)
-  const setLocalTracks = useLocalStore(store => store.setLocalTracks)
-  const initJitsiMeet = useConnectionStore(store => store.initJitsiMeet)
-  const jsMeet = useConnectionStore(store => store.jsMeet)
-  const connectServer = useConnectionStore(store => store.connectServer)
-  const connected = useConnectionStore(store => store.connected)
-  const initConference = useConferenceStore(store => store.init)
-  let { id, displayName, linkPrimary } = useParams() //get Id from url, should error check here I guess
+  type DesiredConnectionState = "INIT" | "SHARE"
+  let { id, linkPrimary } = useParams()
+
+  const [desiredConnectionState, setDesiredConnectionState] = useState<DesiredConnectionState>("SHARE");
+  const [initialized, setInitialized] = useState<Boolean>(false);
+  const [reshare, setReshare] = useState<Boolean>(false);
 
   const videoTrack = useLocalStore((store) => store.video)
-  const desiredConnectionState = useScreenShareStore((store) => store.desiredConnectionState);
-  const linkAnnounced = useScreenShareStore((store) => store.linkAnnounced);
-  const creatingTrack = useScreenShareStore((store) => store.creatingTrack);
-  const setDesiredConnectionState = useScreenShareStore((store) => store.setDesiredConnectionState);
-  const setLinkAnnounced = useScreenShareStore((store) => store.setLinkAnnounced);
-  const setCreatingTrack = useScreenShareStore((store) => store.setCreatingTrack);
 
-  const announceLink = () => {
-    conference?.sendCommand('link', { value: JSON.stringify({ id: conference.myUserId(), main: linkPrimary }) })
-    conference?.on(jsMeet?.events.conference.USER_LEFT, idLeft => {
-      if (idLeft === linkPrimary) {
-        setDesiredConnectionState("INIT");
+  const jitsiMgr = JitsiMgr();
+  const connectionMgr = ConnectionMgr(id);
+  const trackMgr = TrackMgr();
+  const conferenceMgr = ConferenceMgr(id);
+  const linkMgr = LinkMgr(linkPrimary);
+
+  useEffect(() => {
+    if(!initialized){
+      setInitialized(true);
+      (async () => {
+        await jitsiMgr.connect();
+        connectionMgr.connect();
+      })()
+    }
+  }, [initialized, connectionMgr, jitsiMgr])
+
+  useEffect(() => {
+    if(connectionMgr.state !== "READY") return;
+
+    if(desiredConnectionState === "INIT") {
+      if(conferenceMgr.state === "READY") {
+        console.log("conferenceMgr.reset()");
+        conferenceMgr.reset();
       }
-    })
-    setLinkAnnounced(true);
-  }
-
-  const createTrack = () => {
-    if(creatingTrack) return;
-
-    setCreatingTrack(true);
-    jsMeet
-      ?.createLocalTracks({ devices: ['desktop'] }, true)
-      .then(tracks => {
-        setCreatingTrack(false);
-        for(const t of tracks){
-          // set desired state to INIT, when screensharing is stopped via browser ui button "stop sharing"
-          t.addEventListener(jsMeet.events.track.LOCAL_TRACK_STOPPED, () => {
-            setDesiredConnectionState("INIT");
-          })
-        }
-        setLocalTracks(tracks)
-      })
-      .catch(error => {
-        setCreatingTrack(false);
+      if(conferenceMgr.state === "INIT" && ["LINKED", "LEFT"].includes(linkMgr.state)){
+        console.log("linkMgr.reset()");
+        linkMgr.reset();
+      }
+      if(linkMgr.state === "INIT" && ["READY", "STOPPED"].includes(trackMgr.state)) {
+        console.log("trackMgr.reset()");
+        trackMgr.reset();
+      }
+      if(trackMgr.state === "INIT" && reshare){
+        setReshare(false);
+        setDesiredConnectionState("SHARE");
+      }
+    } else if (desiredConnectionState === "SHARE") {
+      if(trackMgr.state === "INIT"){
+        console.log("trackMgr.create()");
+        trackMgr.create();
+      }
+      if(trackMgr.state === "READY" && conferenceMgr.state === "INIT") {
+        console.log("conferenceMgr.join()");
+        conferenceMgr.join();
+      }
+      if(conferenceMgr.state === "READY" && linkMgr.state === "INIT") {
+        console.log("linkMgr.link()");
+        linkMgr.link();
+      }
+      if(linkMgr.state === "LEFT" || trackMgr.state === "STOPPED"){
+        console.log("setDesiredConnectionState('INIT')");
         setDesiredConnectionState("INIT");
-        console.log(error);
-      });
-  }
+        setReshare(false);
+      }
+    }
+  }, [desiredConnectionState, 
+      connectionMgr.state, 
+      trackMgr.state, 
+      conferenceMgr.state, 
+      linkMgr.state,
+      conferenceMgr,
+      trackMgr,
+      linkMgr,
+      reshare
+  ])
 
-  const trackReady = () => {
+  const videoAvailable = () => {
     return videoTrack && !videoTrack.disposed
   }
 
-  const conferenceReady = () => {
-    return (conference !== undefined) && (conference.isJoined() !== null);
-  }
-
-  const disposeTrack = () => {
-    videoTrack?.dispose().then(operate);
-  }
-
-  const disposeLink = () => {
-    setLinkAnnounced(false);
-  }
-
-  const disposeConference = () => {
-    conference?.leave();
-  }
-
-  const joinConfernce = () => {
-    initConference(id);
-  }
-
-  const operate = () => {
-    if (!jsMeet) {
-      initJitsiMeet();
-      return;
-    }
-    if (!connected) {
-      connectServer(id);
-      return;
-    }
-
-    console.log(desiredConnectionState);
-    if (desiredConnectionState == "SHARE") {
-      if (!trackReady()) {
-        createTrack();
-        return;
-      }
-      if (!conferenceReady()) {
-        joinConfernce();
-        return;
-      }
-      if (!linkAnnounced) {
-        conference?.setDisplayName(displayName);
-        announceLink();
-        return;
-      }
-    }
-    if (desiredConnectionState == "INIT") {
-      if (trackReady()) {
-        disposeTrack();
-        return;
-      }
-      if (linkAnnounced) {
-        disposeLink();
-        return;
-      }
-      if (conferenceReady()) {
-        disposeConference();
-        return;
-      }
-    }
-    if (desiredConnectionState == "RESHARE") {
-      if (trackReady()) {
-        disposeTrack();
-        return;
-      }
-      setDesiredConnectionState("SHARE");
-    }
-  }
-
-  useEffect(operate, [jsMeet, connected, desiredConnectionState, conference, linkAnnounced, videoTrack])
-
-
-  const startSharing = () => {
-    setDesiredConnectionState("SHARE");
-  };
-
-  const stopSharing = () => {
-    setDesiredConnectionState("INIT");
-  };
-
-  const reshare = () => {
-    setDesiredConnectionState("RESHARE");
-  };
-
   return (
     <React.Fragment>
-      {!trackReady() && (
-        <button onClick={startSharing}>start sharing</button>
+      { !videoAvailable() && (
+        <button onClick={() => setDesiredConnectionState("SHARE")}>start sharing</button>
       )}
-      {trackReady() && (
-        <button onClick={stopSharing}>stop sharing</button>
+      { videoAvailable() && (
+        <button onClick={() => setDesiredConnectionState("INIT")}>stop sharing</button>
       )}
-      {trackReady() && (
-        <button onClick={reshare}>share something else</button>
+      { videoAvailable() && (
+        <button onClick={() => {setDesiredConnectionState("INIT"); setReshare(true)}}>share something else</button>
       )}
       <ErrorHandler />
 
-      { trackReady() && videoTrack && (
+      { videoTrack && (
         <ScreenShareVideo key={videoTrack.track.id} track={videoTrack} />
       )}
-    </React.Fragment>
-  )
+    </React.Fragment>  )
 }
 
 export default ScreenShare;
