@@ -7,27 +7,28 @@ import React from "react"
 import { ErrorHandler } from "../../components/common/Info/ErrorHandler"
 import styled from "styled-components"
 
-export const JitsiMgr = () => {
-  const [isConnected, setIsConnected] = useState<Boolean>(false)
+type JitsiInitState = "INIT" | "CREATING" | "READY"
+
+const JitsiInitMgr = () => {
+  const [state, setState] = useState<JitsiInitState>("INIT");
   const initJitsiMeet = useConnectionStore(store => store.initJitsiMeet)
-
+  const jsMeet = useConnectionStore(store => store.jsMeet);
   const connect = async () => {
-    return new Promise((resolve, reject) => {
-      if(isConnected){
-        resolve(undefined);
-        return;
-      }
-
-      initJitsiMeet().then(() => {
-        resolve(undefined);
-      })
-    })
+    if(state === "INIT"){
+      setState("CREATING");
+      initJitsiMeet();
+    }
   }
 
+  useEffect(() => {
+    if(jsMeet){
+      setState("READY");
+    }
+  }, [jsMeet]);
+
   return {
-    isConnected,
-    setIsConnected,
-    connect
+    state,
+    connect,
   }
 }
 
@@ -117,7 +118,7 @@ export const TrackMgr = () => {
 }
 
 type ConferenceState = "INIT" | "JOINING" | "READY"
-  
+
 export const ConferenceMgr = (id) => {
   const [state, setState] = useState<ConferenceState>("INIT");
 
@@ -174,7 +175,7 @@ export const LinkMgr = (linkPrimary) => {
   return {
     state,
     link,
-    reset
+    reset,
   }
 }
 
@@ -212,26 +213,24 @@ export const ScreenShare = () => {
   let { id, linkPrimary } = useParams()
 
   const [desiredConnectionState, setDesiredConnectionState] = useState<DesiredConnectionState>("SHARE");
-  const [initialized, setInitialized] = useState<Boolean>(false);
   const [reshare, setReshare] = useState<Boolean>(false);
 
   const videoTrack = useLocalStore((store) => store.video)
 
-  const jitsiMgr = JitsiMgr();
+  const jitsiInitMgr = JitsiInitMgr();
   const connectionMgr = ConnectionMgr(id);
   const trackMgr = TrackMgr();
   const conferenceMgr = ConferenceMgr(id);
   const linkMgr = LinkMgr(linkPrimary);
 
   useEffect(() => {
-    if(!initialized){
-      setInitialized(true);
-      (async () => {
-        await jitsiMgr.connect();
-        connectionMgr.connect();
-      })()
+    if(jitsiInitMgr.state === "INIT"){
+      jitsiInitMgr.connect();
     }
-  }, [initialized, connectionMgr, jitsiMgr])
+    if(jitsiInitMgr.state === "READY" && connectionMgr.state === "INIT"){
+      connectionMgr.connect();
+    }
+  }, [connectionMgr.state, jitsiInitMgr.state, connectionMgr, jitsiInitMgr])
 
   useEffect(() => {
     if(connectionMgr.state !== "READY") return;
@@ -272,15 +271,15 @@ export const ScreenShare = () => {
         setReshare(false);
       }
     }
-  }, [desiredConnectionState, 
-      connectionMgr.state, 
-      trackMgr.state, 
-      conferenceMgr.state, 
+  }, [desiredConnectionState,
+      connectionMgr.state,
+      trackMgr.state,
+      conferenceMgr.state,
       linkMgr.state,
       conferenceMgr,
       trackMgr,
       linkMgr,
-      reshare
+      reshare,
   ])
 
   const videoAvailable = () => {
